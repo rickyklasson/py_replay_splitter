@@ -1,5 +1,7 @@
 import argparse
 import json
+import librosa
+import numpy as np
 import subprocess
 
 from dataclasses import dataclass
@@ -96,8 +98,47 @@ def get_overlapping_pairs(video_files_0: list[VideoFile],
     return overlaps
 
 
+def extract_audio(video_path: Path, audio_path: Path):
+    cmd = ['ffmpeg', '-i', f'{video_path}', "-q:a", "0", "-map", "a", "-y", audio_path]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def load_audio(audio_path: Path) -> tuple:
+    y, sr = librosa.load(audio_path)
+    return y, sr
+
+
+def find_audio_offset(sample_rate, audio0, audio1) -> float:
+    correlation = np.correlate(audio0, audio1, mode='full')
+    best_offset = np.argmax(correlation) - (len(audio1) - 1)
+    return best_offset / sample_rate
+
+
+def sync_overlap_by_audio(overlap: Overlap):
+    """Modifies overlap in place when syncing the video clips using audio correlation."""
+    TMP_FOLDER = Path('./tmp')
+    TMP_FOLDER.mkdir(exist_ok=True, parents=False)
+
+    audio_paths = [TMP_FOLDER / f'audio_{i}.wav' for i, _ in enumerate(overlap.video_files)]
+    extract_audio(overlap.video_files[0].path, audio_paths[0])
+    extract_audio(overlap.video_files[1].path, audio_paths[1])
+
+    audio0, sr0 = load_audio(audio_paths[0])
+    audio1, sr1 = load_audio(audio_paths[1])
+
+    if sr0 != sr1:
+        raise ValueError('Audio sample rates do not match')
+
+    offset = find_audio_offset(sr0, audio0, audio1)
+    print(f'Offset between files: {overlap.video_files} -> \n{offset:.3f}s')
+
+    # Adjust overlap from audio offset.
+
+    TMP_FOLDER.unlink()
+
+
 def reencode_overlap(overlap: Overlap):
-    pass
+    sync_overlap_by_audio(overlap)
 
 
 def main(args):
