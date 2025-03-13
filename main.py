@@ -11,14 +11,6 @@ from pathlib import Path
 
 
 @dataclass
-class Overlap:
-    video_files: tuple
-    duration: float
-    start_time: datetime
-    end_time: datetime
-
-
-@dataclass
 class VideoFile:
     path: Path
     duration: float
@@ -27,8 +19,10 @@ class VideoFile:
     height: int
     start_time: datetime
     end_time: datetime
+    trim_start: float = 0.0
+    trim_end: float = 0.0
 
-    def overlaps(self, other: 'VideoFile') -> Overlap | None:
+    def overlaps(self, other: 'VideoFile') -> tuple['VideoFile', 'VideoFile'] | None:
         if self.start_time > other.end_time or self.end_time < other.start_time:
             return None
 
@@ -36,10 +30,7 @@ class VideoFile:
         overlap_end = min(self.end_time, other.end_time)
         duration = (overlap_end - overlap_start).total_seconds()
 
-        return Overlap(video_files=(self, other),
-                       duration=duration,
-                       start_time=overlap_start,
-                       end_time=overlap_end)
+        return (self, other)
 
 
 def path_to_video_file(video_path: Path) -> VideoFile:
@@ -88,7 +79,7 @@ def get_video_files_from_folder(folder: Path) -> list[VideoFile]:
 
 
 def get_overlapping_pairs(video_files_0: list[VideoFile],
-                          video_files_1: list[VideoFile]) -> list[Overlap]:
+                          video_files_1: list[VideoFile]) -> list[tuple[VideoFile, VideoFile]]:
     overlaps = []
     for file_0 in video_files_0:
         for file_1 in video_files_1:
@@ -120,7 +111,8 @@ def extract_audio(video_path: Path, audio_path: Path):
     cmd = ['ffmpeg', '-i', f'{str(video_path)}',
            '-filter_complex', f'[0:a]amerge=inputs={num_audio_streams}[aout]',
            '-map', '[aout]',
-           '-ar', '22050',
+           '-ar', '48000',
+           '-ac', '1',
            '-y', str(audio_path)]
     print(f'Found {num_audio_streams} audio stream(s). Extracting to file via command: \n{" ".join(cmd)}')
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
@@ -136,38 +128,46 @@ def load_audio(audio_path: Path) -> tuple:
 
 
 def find_audio_offset(sample_rate, audio0, audio1) -> float:
-    correlation = np.correlate(audio0, audio1, mode='full')
+    """Calculates the sync offset between two audio files.
+    Return value > 0: Trim this amount from the start of audio0.
+    Return value < 0: Trim this amount from the start of audio1.
+    """
+    audio0 = audio0.astype(np.float32)
+    audio1 = audio1.astype(np.float32)
+
+    correlation = scipy.signal.correlate(audio0, audio1)
     best_offset = np.argmax(correlation) - (len(audio1) - 1)
     return best_offset / sample_rate
 
 
-def sync_overlap_by_audio(overlap: Overlap):
+def sync_videos_by_audio(vid0: VideoFile, vid1: VideoFile):
     """Modifies overlap in place when syncing the video clips using audio correlation."""
     TMP_FOLDER = Path('./tmp')
     TMP_FOLDER.mkdir(exist_ok=True, parents=False)
 
-    audio_paths = [TMP_FOLDER / f'audio_{i}.wav' for i, _ in enumerate(overlap.video_files)]
-    extract_audio(overlap.video_files[0].path, audio_paths[0])
-    extract_audio(overlap.video_files[1].path, audio_paths[1])
+    audio_0_path = TMP_FOLDER / 'audio_0.wav'
+    audio_1_path = TMP_FOLDER / 'audio_1.wav'
+    extract_audio(vid0.path, audio_0_path)
+    extract_audio(vid1.path, audio_1_path)
 
-    sr0, audio0 = load_audio(audio_paths[0])
-    sr1, audio1 = load_audio(audio_paths[1])
-
-    print(sr0, sr1)
+    sr0, audio0 = load_audio(audio_0_path)
+    sr1, audio1 = load_audio(audio_1_path)
 
     if sr0 != sr1:
         raise ValueError('Audio sample rates do not match')
 
-    #offset = find_audio_offset(sr0, audio0, audio1)
-    #print(f'Offset between files: {overlap.video_files} -> \n{offset:.3f}s')
+    offset = find_audio_offset(sr0, audio0, audio1)
+    print(f'Offset between files: {offset:.3f}s')
 
     # Adjust overlap from audio offset.
+    if offset > 0:
+        pass
 
     #shutil.rmtree(TMP_FOLDER, ignore_errors=True)
 
 
-def reencode_overlap(overlap: Overlap):
-    sync_overlap_by_audio(overlap)
+def reencode_overlapping(vid0: VideoFile, vid1: VideoFile):
+    sync_videos_by_audio(vid0, vid1)
 
 
 def main(args):
@@ -176,7 +176,7 @@ def main(args):
 
     overlaps = get_overlapping_pairs(video_files_0, video_files_1)
 
-    [reencode_overlap(o) for o in overlaps[-1:]]
+    [reencode_overlapping(*o) for o in overlaps[-1:]]
 
 
 if __name__ == '__main__':
