@@ -41,7 +41,7 @@ def path_to_video_file(video_path: Path) -> VideoFile:
         "-show_entries", "format=duration",
         "-show_entries", "stream=r_frame_rate,width,height",
         "-of", "json",
-        video_path,
+        str(video_path),
     ]
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -97,10 +97,7 @@ def detect_number_audio_streams(video_path: Path) -> int:
            '-show_entries', 'stream=index',
            '-of', 'csv=p=0',
            str(video_path)]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode != 0:
-        print(result)
-        raise ChildProcessError('Failed ffprobe command')
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
 
     return int(result.stdout.strip()[-1])
 
@@ -108,17 +105,17 @@ def detect_number_audio_streams(video_path: Path) -> int:
 def extract_audio(video_path: Path, audio_path: Path):
     num_audio_streams = detect_number_audio_streams(video_path)
 
-    cmd = ['ffmpeg', '-i', f'{str(video_path)}',
+    cmd = ['ffmpeg', '-i', str(video_path),
            '-filter_complex', f'[0:a]amerge=inputs={num_audio_streams}[aout]',
            '-map', '[aout]',
            '-ar', '48000',
            '-ac', '1',
+           '-loglevel', 'quiet',
+           '-hide_banner',
+           '-stats',
            '-y', str(audio_path)]
     print(f'Found {num_audio_streams} audio stream(s). Extracting to file via command: \n{" ".join(cmd)}')
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    if result.returncode != 0:
-        print(result)
-        raise ChildProcessError('Failed ffmpeg command')
+    subprocess.run(cmd, text=True, check=True)
 
 
 def load_audio(audio_path: Path) -> tuple:
@@ -161,13 +158,37 @@ def sync_videos_by_audio(vid0: VideoFile, vid1: VideoFile):
 
     # Adjust overlap from audio offset.
     if offset > 0:
-        pass
+        vid0.trim_start = offset
+    else:
+        vid1.trim_start = offset
 
-    #shutil.rmtree(TMP_FOLDER, ignore_errors=True)
+    shutil.rmtree(TMP_FOLDER, ignore_errors=True)
 
 
-def reencode_overlapping(vid0: VideoFile, vid1: VideoFile):
+def reencode_overlapping(vid0: VideoFile, vid1: VideoFile, out_folder: Path):
+    """Re-encode videos into a split-screen view."""
+    out_folder.mkdir(exist_ok=True, parents=True)
+
     sync_videos_by_audio(vid0, vid1)
+
+    timestamp = (vid0.start_time + timedelta(seconds=vid0.trim_start)).strftime('%Y-%m-%d__%H-%M-%S')
+    out_name = f'SplitView__{timestamp}.mkv'
+    cmd = ['ffmpeg',
+           '-i', str(vid0.path), '-i', str(vid1.path),
+           '-filter_complex',
+           '[0:v]scale=1280:720,crop=640:720:320:0,trim=start=15.733:end=55.733,setpts=PTS-STARTPTS[v0];'
+           '[1:v]scale=1280:720,crop=640:720:320:0,trim=start=0:end=40,setpts=PTS-STARTPTS[v1];'
+           '[v0][v1]hstack=inputs=2[vout]',
+           '-map', '[vout]',
+           '-c:v', 'libx264',
+           '-strict', 'experimental',
+           '-vsync', 'vfr',
+           '-loglevel', 'quiet',
+           '-hide_banner',
+           '-stats',
+           '-y', str(out_folder / out_name)]
+
+    subprocess.run(cmd, text=True, check=True)
 
 
 def main(args):
@@ -176,13 +197,13 @@ def main(args):
 
     overlaps = get_overlapping_pairs(video_files_0, video_files_1)
 
-    [reencode_overlapping(*o) for o in overlaps[-1:]]
+    [reencode_overlapping(*o, args.out) for o in overlaps[-1:]]
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='Replay Splitter', description='Creates a splitscreen view of two videos')
     parser.add_argument('folders', type=Path, nargs=2)
+    parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--check', action='store_true')
-    parser.add_argument('--out', type=Path)
 
     main(parser.parse_args())
