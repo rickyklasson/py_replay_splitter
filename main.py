@@ -1,7 +1,8 @@
 import argparse
 import json
-import librosa
 import numpy as np
+import scipy
+import shutil
 import subprocess
 
 from dataclasses import dataclass
@@ -98,14 +99,40 @@ def get_overlapping_pairs(video_files_0: list[VideoFile],
     return overlaps
 
 
+def detect_number_audio_streams(video_path: Path) -> int:
+    cmd = ['ffprobe',
+           '-v', 'error',
+           '-select_streams', 'a',
+           '-show_entries', 'stream=index',
+           '-of', 'csv=p=0',
+           str(video_path)]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        print(result)
+        raise ChildProcessError('Failed ffprobe command')
+
+    return int(result.stdout.strip()[-1])
+
+
 def extract_audio(video_path: Path, audio_path: Path):
-    cmd = ['ffmpeg', '-i', f'{video_path}', "-q:a", "0", "-map", "a", "-y", audio_path]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    num_audio_streams = detect_number_audio_streams(video_path)
+
+    cmd = ['ffmpeg', '-i', f'{str(video_path)}',
+           '-filter_complex', f'[0:a]amerge=inputs={num_audio_streams}[aout]',
+           '-map', '[aout]',
+           '-ar', '22050',
+           '-y', str(audio_path)]
+    print(f'Found {num_audio_streams} audio stream(s). Extracting to file via command: \n{" ".join(cmd)}')
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    if result.returncode != 0:
+        print(result)
+        raise ChildProcessError('Failed ffmpeg command')
 
 
 def load_audio(audio_path: Path) -> tuple:
-    y, sr = librosa.load(audio_path)
-    return y, sr
+    print(f'Loading audio from: {audio_path}')
+    sr, audio = scipy.io.wavfile.read(audio_path)
+    return sr, audio
 
 
 def find_audio_offset(sample_rate, audio0, audio1) -> float:
@@ -123,18 +150,20 @@ def sync_overlap_by_audio(overlap: Overlap):
     extract_audio(overlap.video_files[0].path, audio_paths[0])
     extract_audio(overlap.video_files[1].path, audio_paths[1])
 
-    audio0, sr0 = load_audio(audio_paths[0])
-    audio1, sr1 = load_audio(audio_paths[1])
+    sr0, audio0 = load_audio(audio_paths[0])
+    sr1, audio1 = load_audio(audio_paths[1])
+
+    print(sr0, sr1)
 
     if sr0 != sr1:
         raise ValueError('Audio sample rates do not match')
 
-    offset = find_audio_offset(sr0, audio0, audio1)
-    print(f'Offset between files: {overlap.video_files} -> \n{offset:.3f}s')
+    #offset = find_audio_offset(sr0, audio0, audio1)
+    #print(f'Offset between files: {overlap.video_files} -> \n{offset:.3f}s')
 
     # Adjust overlap from audio offset.
 
-    TMP_FOLDER.unlink()
+    #shutil.rmtree(TMP_FOLDER, ignore_errors=True)
 
 
 def reencode_overlap(overlap: Overlap):
@@ -147,7 +176,7 @@ def main(args):
 
     overlaps = get_overlapping_pairs(video_files_0, video_files_1)
 
-    [reencode_overlap(o) for o in overlaps]
+    [reencode_overlap(o) for o in overlaps[-1:]]
 
 
 if __name__ == '__main__':
