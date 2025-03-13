@@ -159,8 +159,15 @@ def sync_videos_by_audio(vid0: VideoFile, vid1: VideoFile):
     # Adjust overlap from audio offset.
     if offset > 0:
         vid0.trim_start = offset
+        duration_after_trim = vid0.duration - offset
+        duration_out = min(duration_after_trim, vid1.duration)
     else:
         vid1.trim_start = offset
+        duration_after_trim = vid1.duration - offset
+        duration_out = min(duration_after_trim, vid0.duration)
+
+    vid0.trim_end = min(vid0.duration, vid0.trim_start + duration_out)
+    vid1.trim_end = min(vid1.duration, vid1.trim_start + duration_out)
 
     shutil.rmtree(TMP_FOLDER, ignore_errors=True)
 
@@ -176,8 +183,10 @@ def reencode_overlapping(vid0: VideoFile, vid1: VideoFile, out_folder: Path):
     cmd = ['ffmpeg',
            '-i', str(vid0.path), '-i', str(vid1.path),
            '-filter_complex',
-           '[0:v]scale=1280:720,crop=640:720:320:0,trim=start=15.733:end=55.733,setpts=PTS-STARTPTS[v0];'
-           '[1:v]scale=1280:720,crop=640:720:320:0,trim=start=0:end=40,setpts=PTS-STARTPTS[v1];'
+           f'[0:v]scale=1280:720,crop=640:720:320:0,trim=start={vid0.trim_start}:end={vid0.trim_end},'
+           'setpts=PTS-STARTPTS[v0];'
+           f'[1:v]scale=1280:720,crop=640:720:320:0,trim=start={vid1.trim_start}:end={vid1.trim_end},'
+           'setpts=PTS-STARTPTS[v1];'
            '[v0][v1]hstack=inputs=2[vout]',
            '-map', '[vout]',
            '-c:v', 'libx264',
