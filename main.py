@@ -215,6 +215,9 @@ def main(args):
 
     overlaps = get_overlapping_pairs(video_files_0, video_files_1)
 
+    if args.check:
+        return
+
     [reencode_overlapping(*o, args.out) for o in overlaps]
 
 
